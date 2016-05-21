@@ -22,9 +22,15 @@
 		
 #define min(a, b) ((a) < (b) ? (a) : (b))
 
-#define VOXEL_CHUNCK 32768
+#define VOXEL_CHUNCK 65536
 #define LASER_CHUNCK 32
 #define CAM_CHUNCK 32
+
+inline void checkRet(int ret) {
+	if (ret != 0) {
+		printf("ret = %d\n", ret);
+	}
+}
 
 //Load Variables
 void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
@@ -78,12 +84,12 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 
 	cl_int ret;
 
-	int platformIdx;
+	cl_uint platformIdx;
 	cl_platform_id *platformIds;
 	cl_uint platformIdCount;
-	ret = clGetPlatformIDs(0, NULL, &platformIdCount);
+	ret = clGetPlatformIDs(0, NULL, &platformIdCount); checkRet(ret);
 	platformIds = new cl_platform_id[platformIdCount];
-	ret = clGetPlatformIDs(platformIdCount, platformIds, NULL);
+	ret = clGetPlatformIDs(platformIdCount, platformIds, NULL); checkRet(ret);
 
 	for (platformIdx = 0; platformIdx < platformIdCount; platformIdx++) {
 		char name[128];
@@ -92,24 +98,69 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 		if (strncmp("NVIDIA", name, 6) == 0 || strncmp("AMD", name, 3) == 0)
 			break;
 	}
-	delete[] platformIds;
 
 	if (platformIdx == platformIdCount) {
 		printf("No proper graphic card could be found.\n");
 		return;
 	}
+	
+	{
+		char info[1024];
+		printf("Platform info:\n");
+		ret = clGetPlatformInfo(platformIds[platformIdx], CL_PLATFORM_PROFILE, 1024, info, NULL);
+		printf("    profile: %s\n", info);
+		ret = clGetPlatformInfo(platformIds[platformIdx], CL_PLATFORM_VERSION, 1024, info, NULL);
+		printf("    version: %s\n", info);
+		ret = clGetPlatformInfo(platformIds[platformIdx], CL_PLATFORM_NAME, 1024, info, NULL);
+		printf("    name: %s\n", info);
+		ret = clGetPlatformInfo(platformIds[platformIdx], CL_PLATFORM_VENDOR, 1024, info, NULL);
+		printf("    vendor: %s\n", info);
+		ret = clGetPlatformInfo(platformIds[platformIdx], CL_PLATFORM_EXTENSIONS, 1024, info, NULL);
+		printf("    extensions: %s\n", info);
+		printf("\n");
+	}
 
 	/* use the first device */
 	cl_device_id deviceId;
 	ret = clGetDeviceIDs(platformIds[platformIdx], CL_DEVICE_TYPE_DEFAULT, 1, &deviceId, NULL);
+	{
+		char info[1024];
+		printf("Device info:\n");
+		ret = clGetDeviceInfo(deviceId, CL_DEVICE_ADDRESS_BITS, 1024, info, NULL);
+		printf("    address bits: %d\n", *(cl_uint *)info);
+		ret = clGetDeviceInfo(deviceId, CL_DEVICE_EXTENSIONS, 1024, info, NULL);
+		printf("    extensions: %s\n", info);
+		ret = clGetDeviceInfo(deviceId, CL_DEVICE_GLOBAL_MEM_SIZE, 1024, info, NULL);
+		printf("    global mem size: %u\n", *(cl_ulong *)info);
+		ret = clGetDeviceInfo(deviceId, CL_DEVICE_LOCAL_MEM_SIZE, 1024, info, NULL);
+		printf("    local mem size: %u\n", *(cl_ulong *)info);
+		ret = clGetDeviceInfo(deviceId, CL_DEVICE_MAX_COMPUTE_UNITS, 1024, info, NULL);
+		printf("    max compute units: %d\n", *(cl_uint *)info);
+		ret = clGetDeviceInfo(deviceId, CL_DEVICE_MAX_WORK_GROUP_SIZE, 1024, info, NULL);
+		printf("    max work group size: %ld\n", *(size_t *)info);
+		
+		cl_uint tmp;
+		ret = clGetDeviceInfo(deviceId, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS, sizeof(tmp), &tmp, NULL);
+		ret = clGetDeviceInfo(deviceId, CL_DEVICE_MAX_WORK_ITEM_SIZES, 1024, info, NULL);
+		printf("    max work item sizes: ");
+		for (int i = 0; i < tmp; i++) {
+			printf("%ld  ", ((size_t *)info)[i]);
+		}
+		printf("\n");
+		
+		ret = clGetDeviceInfo(deviceId, CL_DEVICE_NAME, 1024, info, NULL);
+		printf("    device name: %s\n", info);
+		
+		printf("\n");
+	}
+	delete[] platformIds;
 
-	cl_context context = clCreateContext(NULL, 1, &deviceId, NULL, NULL, &ret);
-	cl_command_queue commandQueue = clCreateCommandQueue(context, deviceId, 0, &ret);
-	cl_event event, lastEvent = clCreateUserEvent(context, &ret);
-
+	cl_context context = clCreateContext(NULL, 1, &deviceId, NULL, NULL, &ret); checkRet(ret);
+	cl_command_queue commandQueue = clCreateCommandQueue(context, deviceId, 0, &ret); checkRet(ret);
+	
 	cl_program program = clCreateProgramWithSource(context, 1, (const char **)&source_str,
-		(const size_t *)&source_size, &ret);
-	ret = clBuildProgram(program, 1, &deviceId, NULL, NULL, NULL);
+		(const size_t *)&source_size, &ret); checkRet(ret);
+	ret = clBuildProgram(program, 1, &deviceId, NULL, NULL, NULL); checkRet(ret);
 	if (ret != 0) {
 		size_t len;
 		clGetProgramBuildInfo(program, deviceId, CL_PROGRAM_BUILD_LOG, NULL, NULL, &len);
@@ -120,25 +171,25 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 		free(source_str);
 		return;
 	}
-	cl_kernel kernel = clCreateKernel(program, "backproject_fast", &ret);
+	cl_kernel kernel = clCreateKernel(program, "backproject_fast", &ret); checkRet(ret);
 	free(source_str);
 
 	cl_mem d_sI, d_laserpos, d_lasernormal, d_voxels, d_cpos, d_cameranormal;
 
 	d_sI = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-			sizeof(double)*msI*nlasers, sI, &ret);
+			sizeof(double)*msI*nlasers, sI, &ret); checkRet(ret);
 
 	d_laserpos = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-			sizeof(double)*3*nlasers, laserpos, &ret);
+			sizeof(double)*3*nlasers, laserpos, &ret); checkRet(ret);
 
 	d_lasernormal = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-			sizeof(double)*3*nlasers, lasernormal, &ret);
+			sizeof(double)*3*nlasers, lasernormal, &ret); checkRet(ret);
 
 	d_cpos = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-			sizeof(double)*3*nx, cpos, &ret);
+			sizeof(double)*3*nx, cpos, &ret); checkRet(ret);
 
 	d_cameranormal = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-			sizeof(double)*3*nx, cameranormal, &ret);
+			sizeof(double)*3*nx, cameranormal, &ret); checkRet(ret);
 
 	int x = 0,p=0;
 	int tpos = 0;
@@ -175,10 +226,10 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 	cl_mem d_d1l, d_d4l;
 
 	d_d1l = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-		 sizeof(double)*nlasers, d1l, &ret);
+		 sizeof(double)*nlasers, d1l, &ret); checkRet(ret);
 
 	d_d4l = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-		 sizeof(double)*nx, d4l, &ret);
+		 sizeof(double)*nx, d4l, &ret); checkRet(ret);
 
 	// argument indices
 #define IDX_D1L                  0
@@ -198,12 +249,12 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 #define IDX_INTENSITY_CORRECTION 14
 #define IDX_OUTPUT               15
 
-	ret = clSetKernelArg(kernel, IDX_SHIFT, sizeof(shift), (void*)&shift);
-	ret = clSetKernelArg(kernel, IDX_TPP, sizeof(tpp), (void*)&tpp);
-	ret = clSetKernelArg(kernel, IDX_NT, sizeof(nt), (void*)&nt);
-	ret = clSetKernelArg(kernel, IDX_SI, sizeof(d_sI), (void*)&d_sI);
+	ret = clSetKernelArg(kernel, IDX_SHIFT, sizeof(shift), (void*)&shift); checkRet(ret);
+	ret = clSetKernelArg(kernel, IDX_TPP, sizeof(tpp), (void*)&tpp); checkRet(ret);
+	ret = clSetKernelArg(kernel, IDX_NT, sizeof(nt), (void*)&nt); checkRet(ret);
+	ret = clSetKernelArg(kernel, IDX_SI, sizeof(d_sI), (void*)&d_sI); checkRet(ret);
 	double intensity_correction = 1.0;
-	ret = clSetKernelArg(kernel, IDX_INTENSITY_CORRECTION, sizeof(intensity_correction), (void*)&intensity_correction);
+	ret = clSetKernelArg(kernel, IDX_INTENSITY_CORRECTION, sizeof(intensity_correction), (void*)&intensity_correction); checkRet(ret);
 
 	size_t offset[] = {0, 0, 0};
 	size_t globalWorkSize[3], localWorkSize[3];
@@ -218,18 +269,17 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 		globalWorkSize[0] = vchunck;
 		
 		d_voxels = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-			sizeof(double)*3*vchunck, &voxels[3*p], &ret);
+			sizeof(double)*3*vchunck, &voxels[3*p], &ret); checkRet(ret);
 		
-		d_output = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(double)*vchunck,
-			NULL, &ret);
+		d_output = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(double)*vchunck,
+			NULL, &ret); checkRet(ret);
 		double zero = 0.0;
 		ret = clEnqueueFillBuffer(commandQueue, d_output, &zero, sizeof(zero), 0,
-			sizeof(double)*vchunck, 0,NULL,NULL);//1, &lastEvent, &event);
-		//lastEvent = event;
+			sizeof(double)*vchunck, 0, NULL, NULL); checkRet(ret);
 			
-		ret = clSetKernelArg(kernel, IDX_VOXELS, sizeof(d_voxels), (void*)&d_voxels);
-		ret = clSetKernelArg(kernel, IDX_NVOXELS, sizeof(vchunck), (void*)&vchunck);
-		ret = clSetKernelArg(kernel, IDX_OUTPUT, sizeof(d_output), (void*)&d_output);
+		ret = clSetKernelArg(kernel, IDX_VOXELS, sizeof(d_voxels), (void*)&d_voxels); checkRet(ret);
+		ret = clSetKernelArg(kernel, IDX_NVOXELS, sizeof(vchunck), (void*)&vchunck); checkRet(ret);
+		ret = clSetKernelArg(kernel, IDX_OUTPUT, sizeof(d_output), (void*)&d_output); checkRet(ret);
 		
 		for (tpos = 0; tpos < nlasers; tpos += LASER_CHUNCK) {
 			int lchunck = min(LASER_CHUNCK, nlasers - tpos);
@@ -237,20 +287,20 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 			
 			cl_buffer_region d_d1l_off_Info = {sizeof(double)*tpos, sizeof(double)*lchunck};
 			cl_mem d_d1l_off = clCreateSubBuffer(d_d1l, CL_MEM_READ_ONLY,
-				CL_BUFFER_CREATE_TYPE_REGION, &d_d1l_off_Info, &ret);
-			ret = clSetKernelArg(kernel, IDX_D1L, sizeof(d_d1l_off), (void*)&d_d1l_off);
+				CL_BUFFER_CREATE_TYPE_REGION, &d_d1l_off_Info, &ret); checkRet(ret);
+			ret = clSetKernelArg(kernel, IDX_D1L, sizeof(d_d1l_off), (void*)&d_d1l_off); checkRet(ret);
 			
 			cl_buffer_region d_laserpos_off_info = {sizeof(double)*3*tpos, sizeof(double)*3*lchunck};
 			cl_mem d_laserpos_off = clCreateSubBuffer(d_laserpos, CL_MEM_READ_ONLY,
-				CL_BUFFER_CREATE_TYPE_REGION, &d_laserpos_off_info, &ret);
-			ret = clSetKernelArg(kernel, IDX_LASERPOS, sizeof(d_laserpos_off), (void*)&d_laserpos_off);
+				CL_BUFFER_CREATE_TYPE_REGION, &d_laserpos_off_info, &ret); checkRet(ret);
+			ret = clSetKernelArg(kernel, IDX_LASERPOS, sizeof(d_laserpos_off), (void*)&d_laserpos_off); checkRet(ret);
 			
 			cl_buffer_region d_lasernormal_off_info = {sizeof(double)*3*tpos, sizeof(double)*3*lchunck};
 			cl_mem d_lasernormal_off = clCreateSubBuffer(d_lasernormal, CL_MEM_READ_ONLY,
-				CL_BUFFER_CREATE_TYPE_REGION, &d_lasernormal_off_info, &ret);
-			ret = clSetKernelArg(kernel, IDX_LASERNORMAL, sizeof(d_lasernormal_off), (void*)&d_lasernormal_off);
+				CL_BUFFER_CREATE_TYPE_REGION, &d_lasernormal_off_info, &ret); checkRet(ret);
+			ret = clSetKernelArg(kernel, IDX_LASERNORMAL, sizeof(d_lasernormal_off), (void*)&d_lasernormal_off); checkRet(ret);
 			
-			ret = clSetKernelArg(kernel, IDX_NLASERS, sizeof(lchunck), (void*)&lchunck);
+			ret = clSetKernelArg(kernel, IDX_NLASERS, sizeof(lchunck), (void*)&lchunck); checkRet(ret);
 			
 			for (x = 0; x < nx; x += CAM_CHUNCK) {
 				int xchunck = min(CAM_CHUNCK, nx - x);
@@ -258,29 +308,28 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 				
 				cl_buffer_region d_cpos_off_info = {sizeof(double)*3*x, sizeof(double)*3*xchunck};
 				cl_mem d_cpos_off = clCreateSubBuffer(d_cpos, CL_MEM_READ_ONLY,
-					CL_BUFFER_CREATE_TYPE_REGION, &d_cpos_off_info, &ret);
-				ret = clSetKernelArg(kernel, IDX_CPOS, sizeof(d_cpos_off), (void*)&d_cpos_off);
+					CL_BUFFER_CREATE_TYPE_REGION, &d_cpos_off_info, &ret); checkRet(ret);
+				ret = clSetKernelArg(kernel, IDX_CPOS, sizeof(d_cpos_off), (void*)&d_cpos_off); checkRet(ret);
 				
 				cl_buffer_region d_cameranormal_off_info = {sizeof(double)*3*x, sizeof(double)*3*xchunck};
 				cl_mem d_cameranormal_off = clCreateSubBuffer(d_cameranormal, CL_MEM_READ_ONLY,
-					CL_BUFFER_CREATE_TYPE_REGION, &d_cameranormal_off_info, &ret);
-				ret = clSetKernelArg(kernel, IDX_CAMERANORMAL, sizeof(d_cameranormal_off), (void*)&d_cameranormal_off);
+					CL_BUFFER_CREATE_TYPE_REGION, &d_cameranormal_off_info, &ret); checkRet(ret);
+				ret = clSetKernelArg(kernel, IDX_CAMERANORMAL, sizeof(d_cameranormal_off), (void*)&d_cameranormal_off); checkRet(ret);
 				
 				cl_buffer_region d_d4l_off_info = {sizeof(double)*x, sizeof(double)*xchunck};
 				cl_mem d_d4l_off = clCreateSubBuffer(d_d4l, CL_MEM_READ_ONLY,
-					CL_BUFFER_CREATE_TYPE_REGION, &d_d4l_off_info, &ret);			
-				ret = clSetKernelArg(kernel, IDX_D4L, sizeof(d_d4l_off), (void*)&d_d4l_off);
+					CL_BUFFER_CREATE_TYPE_REGION, &d_d4l_off_info, &ret); checkRet(ret);
+				ret = clSetKernelArg(kernel, IDX_D4L, sizeof(d_d4l_off), (void*)&d_d4l_off); checkRet(ret);
 				
-				ret = clSetKernelArg(kernel, IDX_NX, sizeof(xchunck), (void*)&xchunck);
+				ret = clSetKernelArg(kernel, IDX_NX, sizeof(xchunck), (void*)&xchunck); checkRet(ret);
 		
-				clEnqueueNDRangeKernel(commandQueue, kernel, 3, offset, globalWorkSize,
-					localWorkSize, 0,NULL,NULL);//1, &lastEvent, &event);
-				//lastEvent = event;
+				ret = clEnqueueNDRangeKernel(commandQueue, kernel, 3, offset, globalWorkSize,
+					localWorkSize, 0, NULL, NULL);
+				checkRet(ret);
 			}
 		}
-		ret = clEnqueueReadBuffer(commandQueue, d_output, CL_FALSE, 0, sizeof(double)*vchunck,
-			&output[p], 0,NULL,NULL);//1, &lastEvent, &event);
-		//lastEvent = event;
+		ret = clEnqueueReadBuffer(commandQueue, d_output, CL_TRUE, 0, sizeof(double)*vchunck,
+			&output[p], 0, NULL, NULL); checkRet(ret);
 	}
 
 	mexPrintf("100 percent done\n");
