@@ -1,3 +1,5 @@
+#pragma OPENCL EXTENSION cl_khr_fp64 : enable
+
 #define LASER_CHUNCK 32
 #define CAM_CHUNCK 32
 		
@@ -44,5 +46,5 @@ __kernel void backproject_fast(__global double *d1l, __global double *laserpos,
 			result += sum[i*CAM_CHUNCK+j];
 		}
 	}
-	output[voxelIdx] = result;
+	output[voxelIdx] += result;
 }
